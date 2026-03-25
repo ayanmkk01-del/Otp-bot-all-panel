@@ -30,7 +30,7 @@ except ImportError:
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 
-# ========== কনফিগারেশন – আপনার তথ্য দিয়ে পূরণ করা আছে ==========
+# ========== কনফিগারেশন – আপডেটেড তথ্য ==========
 TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN",
     "5929619535:AAGsgoN5pYczsKWOGqVWTrslk0qJr2jJVYA"
@@ -41,11 +41,11 @@ GROUP_CHAT_ID = os.getenv(
 )
 SESSION_COOKIE = os.getenv(
     "SESSION_COOKIE",
-    "04ae8f251a56f9f58792818ae61e58de"          # আপডেট করা কুকি
+    "bd10e8dc1199015c0372e62784b173f3"  # আপডেটেড কুকিজ
 )
 TARGET_URL = os.getenv(
     "TARGET_URL",
-    "http://147.135.212.148/ints/agent/res/data_smscdr.php"  # আপডেট করা URL
+    "http://147.135.212.148/ints/agent/res/data_smscdr.php"  # আপডেটেড URL
 )
 NUMBER_BOT_URL = os.getenv(
     "NUMBER_BOT_URL",
@@ -214,7 +214,6 @@ class OTPMonitorBot:
             "Australia": "🇦🇺",
             "New Zealand": "🇳🇿",
             "Canada": "🇨🇦",
-            "Angola": "🇦🇴",                     # ← এখানে Angola যোগ করা হয়েছে
         }
         # পুরো নাম দিয়ে খুঁজি
         if country_name in flags:
@@ -547,6 +546,7 @@ async def main():
     print(f"📱 গ্রুপ আইডি: {GROUP_CHAT_ID}")
     print(f"🌐 টার্গেট URL: {TARGET_URL}")
     print(f"🤖 Number Bot URL: {NUMBER_BOT_URL}")
+    print(f"🍪 সেশন কুকি: {SESSION_COOKIE[:10]}...")
     if not HAS_AIOHTTP:
         print("⚠️  aiohttp ইনস্টল নেই – requests ব্যবহার হবে (ধীর). 'pip install aiohttp' দিন দ্রুত অপারেশনের জন্য")
     print("🚀 বট চালু হচ্ছে...")
