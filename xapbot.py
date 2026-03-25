@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-OTP মনিটর বট – শুধু প্রথম OTP ফরওয়ার্ড করে
+OTP মনিটর বট – অটো লগইন + শুধু প্রথম OTP ফরওয়ার্ড
 ----------------------------------------
+- অটোমেটিক লগইন (কুকি এক্সপায়ার হলে নিজেই নতুন করে লগইন করে)
 - কোন OTP একবার পাঠালে আর পাঠায় না (২৪ ঘণ্টা মেমোরি)
-- aiohttp না থাকলে requests ব্যবহার করবে (যেকোনো পরিবেশে চলে)
+- aiohttp না থাকলে requests ব্যবহার করবে
 - ০.৫ সেকেন্ড পর পর API চেক করে
-- এরর লগ ও রিট্রাই সহ
-- দেশের ফ্ল্যাগ সহ ফরম্যাট (ছবির মতো)
+- দেশের ফ্ল্যাগ সহ ফরম্যাট
 """
 
 import asyncio
@@ -30,27 +30,16 @@ except ImportError:
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 
-# ========== কনফিগারেশন – আপনার তথ্য দিয়ে পূরণ করা আছে ==========
-TELEGRAM_BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN",
-    "5929619535:AAGsgoN5pYczsKWOGqVWTrslk0qJr2jJVYA"
-)
-GROUP_CHAT_ID = os.getenv(
-    "GROUP_CHAT_ID",
-    "-1001153782407"
-)
-SESSION_COOKIE = os.getenv(
-    "SESSION_COOKIE",
-    "04ae8f251a56f9f58792818ae61e58de"          # আপডেট করা কুকি
-)
-TARGET_URL = os.getenv(
-    "TARGET_URL",
-    "http://147.135.212.148/ints/agent/res/data_smscdr.php"  # আপডেট করা URL
-)
-NUMBER_BOT_URL = os.getenv(
-    "NUMBER_BOT_URL",
-    "https://t.me/Updateotpnew_bot"
-)
+# ========== কনফিগারেশন – লগইন তথ্য দিয়ে পূরণ করুন ==========
+TELEGRAM_BOT_TOKEN = "8362446113:AAGsrg9iZmeByXmFbig2vdKfmDBUpgppIDM"
+GROUP_CHAT_ID = "-1001153782407"
+TARGET_URL = "https://imssms.org/client/res/data_smscdr.php"
+LOGIN_URL = "https://imssms.org/login"
+NUMBER_BOT_URL = "https://t.me/Updateotpnew_bot"
+
+# লগইন ক্রেডেনশিয়াল (আপনার একাউন্টের তথ্য দিন)
+LOGIN_USERNAME = "mamun1132"      # স্ক্রিনশট থেকে নেওয়া
+LOGIN_PASSWORD = "Mamun1132"      # অনুমানিক পাসওয়ার্ড (সঠিকটি দিন)
 # =================================================================
 
 # লগিং সেটআপ
@@ -62,31 +51,36 @@ logger = logging.getLogger(__name__)
 
 
 class OTPMonitorBot:
-    """মূল বট ক্লাস – OTP মনিটর ও টেলিগ্রাম ফরওয়ার্ডার"""
+    """মূল বট ক্লাস – OTP মনিটর ও টেলিগ্রাম ফরওয়ার্ডার (অটো লগইন সহ)"""
 
-    def __init__(self, telegram_token, group_chat_id, session_cookie, target_url):
+    def __init__(self, telegram_token, group_chat_id, login_username, login_password):
         self.telegram_token = telegram_token
         self.group_chat_id = group_chat_id
-        self.session_cookie = session_cookie
-        self.target_url = target_url
-
-        # আগে পাঠানো OTP গুলো JSON ফাইলে সেভ থাকে (রিস্টার্ট করেও ডুপ্লিকেট রোধ)
+        self.login_username = login_username
+        self.login_password = login_password
+        
+        # সেশন কুকি (খালি থাকবে, লগইন করলে পূর্ণ হবে)
+        self.session_cookie = None
+        self.session = None  # aiohttp সেশন (যদি aiohttp থাকে)
+        
+        # আগে পাঠানো OTP গুলো JSON ফাইলে সেভ থাকে
         self.storage_file = "processed_otps.json"
         self.processed_otps = self._load_processed_otps()
 
         self.total_otps_sent = 0
         self.last_otp_time = None
         self.is_monitoring = True
+        self.login_attempts = 0
 
-        # OTP শনাক্ত করার রেগুলার এক্সপ্রেশন (বাংলা + ইংরেজি)
+        # OTP শনাক্ত করার রেগুলার এক্সপ্রেশন
         patterns = [
-            r"\b\d{3}-\d{3}\b",          # 123-456
-            r"\b\d{5}\b",                # 5 ডিজিট
-            r"code\s*\d+",              # code 12345
-            r"code:\s*\d+",             # code: 12345
-            r"কোড\s*\d+",               # কোড 12345
-            r"\b\d{6}\b",               # 6 ডিজিট
-            r"\b\d{4}\b",               # 4 ডিজিট
+            r"\b\d{3}-\d{3}\b",
+            r"\b\d{5}\b",
+            r"code\s*\d+",
+            r"code:\s*\d+",
+            r"কোড\s*\d+",
+            r"\b\d{6}\b",
+            r"\b\d{4}\b",
             r"Your WhatsApp code \d+-\d+",
             r"WhatsApp code \d+-\d+",
             r"Telegram code \d+",
@@ -99,11 +93,145 @@ class OTPMonitorBot:
         if HAS_AIOHTTP:
             logger.info("✅ aiohttp ব্যবহার করা হচ্ছে (দ্রুত)")
         else:
-            logger.warning("⚠️ aiohttp ইনস্টল নেই – requests ব্যবহার হবে (ধীর). 'pip install aiohttp' দিন ভালো পারফরম্যান্সের জন্য")
+            logger.warning("⚠️ aiohttp ইনস্টল নেই – requests ব্যবহার হবে (ধীর)")
 
+    # ---------- অটো লগইন ফাংশন ----------
+    async def login(self):
+        """imssms.org এ লগইন করে সেশন কুকি নেয়"""
+        logger.info(f"🔐 লগইন করার চেষ্টা: {self.login_username}")
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Mobile Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://imssms.org",
+            "Referer": "https://imssms.org/login",
+        }
+        
+        # লগইন ডাটা (ফর্ম ডাটা)
+        login_data = {
+            "username": self.login_username,
+            "password": self.login_password,
+            "submit": "Sign In"
+        }
+        
+        if HAS_AIOHTTP:
+            return await self._login_aiohttp(headers, login_data)
+        else:
+            return await self._login_requests(headers, login_data)
+    
+    async def _login_aiohttp(self, headers, login_data):
+        """aiohttp দিয়ে লগইন"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                # প্রথমে লগইন পেজে GET request (কুকি পেতে)
+                async with session.get(LOGIN_URL, headers=headers, ssl=False) as resp:
+                    pass
+                
+                # POST করে লগইন
+                async with session.post(LOGIN_URL, data=login_data, headers=headers, ssl=False, allow_redirects=True) as resp:
+                    if resp.status == 200:
+                        # কুকি বের করা
+                        cookies = session.cookie_jar.filter_cookies('https://imssms.org')
+                        if 'PHPSESSID' in cookies:
+                            self.session_cookie = cookies['PHPSESSID'].value
+                            logger.info(f"✅ লগইন সফল! নতুন সেশন কুকি: {self.session_cookie[:20]}...")
+                            self.login_attempts = 0
+                            return True
+                        else:
+                            logger.error("❌ লগইন ব্যর্থ: PHPSESSID কুকি পাওয়া যায়নি")
+                            return False
+                    else:
+                        logger.error(f"❌ লগইন ব্যর্থ: HTTP {resp.status}")
+                        return False
+        except Exception as e:
+            logger.error(f"❌ লগইন এরর: {e}")
+            return False
+    
+    async def _login_requests(self, headers, login_data):
+        """requests দিয়ে লগইন"""
+        def _sync_login():
+            try:
+                session = requests.Session()
+                # প্রথমে GET
+                session.get(LOGIN_URL, headers=headers, verify=False)
+                # তারপর POST
+                response = session.post(LOGIN_URL, data=login_data, headers=headers, verify=False, allow_redirects=True)
+                
+                if response.status_code == 200:
+                    cookies = session.cookies.get_dict()
+                    if 'PHPSESSID' in cookies:
+                        self.session_cookie = cookies['PHPSESSID']
+                        logger.info(f"✅ লগইন সফল! নতুন সেশন কুকি: {self.session_cookie[:20]}...")
+                        self.login_attempts = 0
+                        return True
+                    else:
+                        logger.error("❌ লগইন ব্যর্থ: PHPSESSID কুকি পাওয়া যায়নি")
+                        return False
+                else:
+                    logger.error(f"❌ লগইন ব্যর্থ: HTTP {response.status_code}")
+                    return False
+            except Exception as e:
+                logger.error(f"❌ লগইন এরর: {e}")
+                return False
+        
+        return await asyncio.to_thread(_sync_login)
+    
+    # ---------- সেশন কুকি ভ্যালিড চেক ----------
+    async def check_session_valid(self):
+        """বর্তমান সেশন কুকি ভ্যালিড কিনা চেক করে"""
+        if not self.session_cookie:
+            return False
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
+            "Cookie": f"PHPSESSID={self.session_cookie}",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        
+        current_date = time.strftime("%Y-%m-%d")
+        params = {
+            "fdate1": f"{current_date} 00:00:00",
+            "fdate2": f"{current_date} 23:59:59",
+            "sesskey": "Q05RR0FRUUZCVQ==",
+            "sEcho": "1",
+            "iColumns": "7",
+            "iDisplayStart": "0",
+            "iDisplayLength": "1",
+            "_": str(int(time.time() * 1000)),
+        }
+        
+        if HAS_AIOHTTP:
+            return await self._check_session_aiohttp(headers, params)
+        else:
+            return await self._check_session_requests(headers, params)
+    
+    async def _check_session_aiohttp(self, headers, params):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(TARGET_URL, headers=headers, params=params, timeout=5, ssl=False) as resp:
+                    if resp.status == 200:
+                        text = await resp.text()
+                        if 'aaData' in text or '{"aaData":' in text:
+                            return True
+                    return False
+        except:
+            return False
+    
+    async def _check_session_requests(self, headers, params):
+        def _sync_check():
+            try:
+                response = requests.get(TARGET_URL, headers=headers, params=params, timeout=5, verify=False)
+                if response.status_code == 200:
+                    return True
+                return False
+            except:
+                return False
+        return await asyncio.to_thread(_sync_check)
+    
     # ---------- JSON ফাইল থেকে OTP ID লোড/সেভ ----------
     def _load_processed_otps(self):
-        """JSON ফাইল থেকে প্রসেসড OTP ID লোড করে, ২৪ ঘণ্টার পুরোনো ডিলিট করে"""
         try:
             with open(self.storage_file, "r") as f:
                 data = json.load(f)
@@ -118,16 +246,13 @@ class OTPMonitorBot:
             return set()
 
     def _save_processed_otps(self):
-        """বর্তমান OTP ID গুলো JSON ফাইলে সেভ করে"""
         data = {otp_id: datetime.now().isoformat() for otp_id in self.processed_otps}
         with open(self.storage_file, "w") as f:
             json.dump(data, f)
-        logger.debug(f"💾 {len(self.processed_otps)} টি OTP ID সেভ করা হয়েছে")
 
     # ---------- ফরম্যাটিং হেলপার ----------
     @staticmethod
     def hide_phone_number(phone_number):
-        """ফোন নাম্বারের মাঝের ডিজিটগুলো লুকাও (যেমন: 01712****34)"""
         if not phone_number:
             return "***"
         phone_str = str(phone_number)
@@ -138,7 +263,6 @@ class OTPMonitorBot:
         return "***" + phone_str[-1:] if phone_str else ""
 
     def extract_country_name(self, operator):
-        """অপারেটর স্ট্রিং থেকে শুধু দেশের নাম বের করো (আন্ডারস্কোর বা স্পেসের আগের অংশ)"""
         if not operator:
             return "N/A"
         if '_' in operator:
@@ -147,79 +271,28 @@ class OTPMonitorBot:
             return operator.split()[0].strip()
 
     def get_country_flag(self, country_name):
-        """দেশের নাম অনুযায়ী ফ্ল্যাগ ইমোজি ফেরত দাও"""
         flags = {
-            "Venezuela": "🇻🇪",
-            "Algeria": "🇩🇿",
-            "Honduras": "🇭🇳",
-            "Saudi": "🇸🇦",
-            "Saudi Arabia": "🇸🇦",
-            "Pakistan": "🇵🇰",
-            "Bangladesh": "🇧🇩",
-            "India": "🇮🇳",
-            "USA": "🇺🇸",
-            "UK": "🇬🇧",
-            "UAE": "🇦🇪",
-            "Egypt": "🇪🇬",
-            "Turkey": "🇹🇷",
-            "Morocco": "🇲🇦",
-            "Tunisia": "🇹🇳",
-            "Libya": "🇱🇾",
-            "Jordan": "🇯🇴",
-            "Kuwait": "🇰🇼",
-            "Oman": "🇴🇲",
-            "Qatar": "🇶🇦",
-            "Bahrain": "🇧🇭",
-            "Yemen": "🇾🇪",
-            "Syria": "🇸🇾",
-            "Lebanon": "🇱🇧",
-            "Palestine": "🇵🇸",
-            "Iraq": "🇮🇶",
-            "Iran": "🇮🇷",
-            "Afghanistan": "🇦🇫",
-            "Russia": "🇷🇺",
-            "China": "🇨🇳",
-            "Malaysia": "🇲🇾",
-            "Indonesia": "🇮🇩",
-            "Thailand": "🇹🇭",
-            "Vietnam": "🇻🇳",
-            "Philippines": "🇵🇭",
-            "South Africa": "🇿🇦",
-            "Nigeria": "🇳🇬",
-            "Kenya": "🇰🇪",
-            "Ghana": "🇬🇭",
-            "Brazil": "🇧🇷",
-            "Argentina": "🇦🇷",
-            "Mexico": "🇲🇽",
-            "Colombia": "🇨🇴",
-            "Chile": "🇨🇱",
-            "Peru": "🇵🇪",
-            "Spain": "🇪🇸",
-            "France": "🇫🇷",
-            "Germany": "🇩🇪",
-            "Italy": "🇮🇹",
-            "Netherlands": "🇳🇱",
-            "Belgium": "🇧🇪",
-            "Sweden": "🇸🇪",
-            "Norway": "🇳🇴",
-            "Denmark": "🇩🇰",
-            "Finland": "🇫🇮",
-            "Poland": "🇵🇱",
-            "Czech Republic": "🇨🇿",
-            "Austria": "🇦🇹",
-            "Switzerland": "🇨🇭",
-            "Greece": "🇬🇷",
-            "Portugal": "🇵🇹",
-            "Ireland": "🇮🇪",
-            "Australia": "🇦🇺",
-            "New Zealand": "🇳🇿",
-            "Canada": "🇨🇦",
-            "Angola": "🇦🇴",                     # ← এখানে Angola যোগ করা হয়েছে
+            "Venezuela": "🇻🇪", "Algeria": "🇩🇿", "Honduras": "🇭🇳",
+            "Saudi": "🇸🇦", "Saudi Arabia": "🇸🇦", "Pakistan": "🇵🇰",
+            "Bangladesh": "🇧🇩", "India": "🇮🇳", "USA": "🇺🇸",
+            "UK": "🇬🇧", "UAE": "🇦🇪", "Egypt": "🇪🇬", "Turkey": "🇹🇷",
+            "Morocco": "🇲🇦", "Tunisia": "🇹🇳", "Libya": "🇱🇾", "Jordan": "🇯🇴",
+            "Kuwait": "🇰🇼", "Oman": "🇴🇲", "Qatar": "🇶🇦", "Bahrain": "🇧🇭",
+            "Yemen": "🇾🇪", "Syria": "🇸🇾", "Lebanon": "🇱🇧", "Palestine": "🇵🇸",
+            "Iraq": "🇮🇶", "Iran": "🇮🇷", "Afghanistan": "🇦🇫", "Russia": "🇷🇺",
+            "China": "🇨🇳", "Malaysia": "🇲🇾", "Indonesia": "🇮🇩", "Thailand": "🇹🇭",
+            "Vietnam": "🇻🇳", "Philippines": "🇵🇭", "South Africa": "🇿🇦",
+            "Nigeria": "🇳🇬", "Kenya": "🇰🇪", "Ghana": "🇬🇭", "Brazil": "🇧🇷",
+            "Argentina": "🇦🇷", "Mexico": "🇲🇽", "Colombia": "🇨🇴", "Chile": "🇨🇱",
+            "Peru": "🇵🇪", "Spain": "🇪🇸", "France": "🇫🇷", "Germany": "🇩🇪",
+            "Italy": "🇮🇹", "Netherlands": "🇳🇱", "Belgium": "🇧🇪", "Sweden": "🇸🇪",
+            "Norway": "🇳🇴", "Denmark": "🇩🇰", "Finland": "🇫🇮", "Poland": "🇵🇱",
+            "Czech Republic": "🇨🇿", "Austria": "🇦🇹", "Switzerland": "🇨🇭",
+            "Greece": "🇬🇷", "Portugal": "🇵🇹", "Ireland": "🇮🇪", "Australia": "🇦🇺",
+            "New Zealand": "🇳🇿", "Canada": "🇨🇦",
         }
-        # পুরো নাম দিয়ে খুঁজি
         if country_name in flags:
             return flags[country_name]
-        # যদি না পাই, প্রথম শব্দ দিয়ে চেষ্টা
         first_word = country_name.split()[0]
         for full_name, flag in flags.items():
             if full_name.startswith(first_word):
@@ -227,20 +300,17 @@ class OTPMonitorBot:
         return ""
 
     def extract_otp(self, message):
-        """মেসেজ থেকে OTP কোড বের করো"""
         if not message:
             return None
         match = self.otp_regex.search(message)
         return match.group(0) if match else None
 
     def create_otp_id(self, timestamp, phone_number, message):
-        """ইউনিক OTP আইডি জেনারেট করো (টাইমস্ট্যাম্প + ফোন + OTP)"""
         otp = self.extract_otp(message) or message[:20] if message else "unknown"
         return f"{timestamp}_{phone_number}_{otp}"
 
     # ---------- টেলিগ্রাম মেসেজ পাঠানো ----------
     async def send_telegram_message(self, message, chat_id=None, reply_markup=None):
-        """টেলিগ্রাম গ্রুপে মেসেজ পাঠাও"""
         chat_id = chat_id or self.group_chat_id
         try:
             bot = Bot(token=self.telegram_token)
@@ -257,19 +327,13 @@ class OTPMonitorBot:
             return False
 
     async def send_startup_message(self):
-        """বট চালু হওয়ার বার্তা গ্রুপে পাঠাও (শুধু প্রয়োজনীয় বাটন)"""
         startup_msg = f"""
-🚀 **OTP মনিটর বট চালু হয়েছে** 🚀
+🚀 **OTP মনিটর বট চালু হয়েছে (অটো লগইন সহ)** 🚀
 ➖➖➖➖➖➖➖➖➖➖➖
 
 ✅ **স্ট্যাটাস:** `লাইভ ও মনিটরিং`
+🔐 **অটো লগইন:** `সক্রিয়`
 ⚡ **রেসপন্স:** `তাৎক্ষণিক`
-📡 **মোড:** `রিয়েল-টাইম`
-
-🎯 **ফিচার:**
-• শুধু প্রথম OTP ফরওয়ার্ড
-• লাইভ মনিটরিং
-• অটো ডিটেকশন
 
 ⏰ **চালুর সময়:** `{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}`
 
@@ -286,11 +350,9 @@ class OTPMonitorBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await self.send_telegram_message(startup_msg, reply_markup=reply_markup)
-        logger.info("✅ স্টার্টআপ মেসেজ গ্রুপে পাঠানো হয়েছে")
 
     @staticmethod
     def create_response_buttons():
-        """OTP মেসেজের সাথে ইনলাইন বাটন তৈরি করো (ছবির মতো)"""
         keyboard = [
             [
                 InlineKeyboardButton("👥 Bot Developer", url="https://t.me/rana1132"),
@@ -300,24 +362,20 @@ class OTPMonitorBot:
         return InlineKeyboardMarkup(keyboard)
 
     def format_message(self, sms_data):
-        """SMS ডেটা থেকে টেলিগ্রাম মেসেজ ফরম্যাট করো (ছবির স্টাইলে + ফ্ল্যাগ)"""
         if len(sms_data) < 6:
-            logger.warning(f"অসম্পূর্ণ SMS ডেটা: {sms_data}")
             return "⚠️ অসম্পূর্ণ SMS ডেটা পাওয়া গেছে"
-
-        # sms_data: [timestamp, operator, phone, platform, ?, message, ...]
-        timestamp = sms_data[0] if len(sms_data) > 0 else "N/A"
-        operator = sms_data[1] if len(sms_data) > 1 else "N/A"        # দেশ+অপারেটর
-        phone_number = sms_data[2] if len(sms_data) > 2 else "N/A"
-        platform = sms_data[3] if len(sms_data) > 3 else "N/A"        # সার্ভিস (Samsung, WA, YallaLudo ইত্যাদি)
-        message = sms_data[5] if len(sms_data) > 5 else "N/A"
+        
+        timestamp = sms_data[0]
+        operator = sms_data[1]
+        phone_number = sms_data[2]
+        platform = sms_data[3]
+        message = sms_data[5]
 
         hidden_phone = self.hide_phone_number(phone_number)
-        country = self.extract_country_name(operator)                 # শুধু দেশের নাম
-        flag = self.get_country_flag(country)                         # ফ্ল্যাগ ইমোজি
+        country = self.extract_country_name(operator)
+        flag = self.get_country_flag(country)
         otp_code = self.extract_otp(message) or "প্রসেসিং..."
 
-        # ছবির মতো ফরম্যাট (টাইমস্ট্যাম্প বাদ, ফ্ল্যাগ+দেশ)
         return f"""
 {flag} {country} #{platform}
 {hidden_phone}
@@ -326,15 +384,34 @@ class OTPMonitorBot:
 {otp_code}
 """
 
-    # ---------- API থেকে SMS ডেটা ফেচ (aiohttp/requests অটো সিলেক্ট) ----------
+    # ---------- API থেকে SMS ডেটা ফেচ (অটো রিলগইন সহ) ----------
+    async def fetch_sms_data_with_auth(self):
+        """সেশন চেক করে, প্রয়োজন হলে লগইন করে, তারপর ডাটা ফেচ করে"""
+        # সেশন ভ্যালিড কিনা চেক করুন
+        if not self.session_cookie:
+            logger.info("কুকি নেই, লগইন করা হচ্ছে...")
+            if not await self.login():
+                logger.error("লগইন ব্যর্থ, আবার চেষ্টা করা হবে...")
+                return None
+        
+        # সেশন চেক করুন
+        if not await self.check_session_valid():
+            logger.warning("সেশন এক্সপায়ার হয়েছে, পুনরায় লগইন করা হচ্ছে...")
+            if not await self.login():
+                logger.error("পুনরায় লগইন ব্যর্থ!")
+                return None
+        
+        # ডাটা ফেচ করুন
+        return await self.fetch_sms_data()
+    
     async def fetch_sms_data(self):
-        """টার্গেট API থেকে SMS ডেটা নিয়ে আসো"""
+        """সেশন কুকি দিয়ে API থেকে SMS ডেটা নিয়ে আসো"""
         headers = {
             "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Mobile Safari/537.36",
             "Accept": "application/json, text/javascript, */*; q=0.01",
-            "Accept-Language": "en-AZ,en;q=0.9,it-SI;q=0.8,it;q=0.7,es-BO;q=0.6,es;q=0.5,ar-IL;q=0.4,ar;q=0.3,en-GB;q=0.2,en-US;q=0.1",
+            "Accept-Language": "en-AZ,en;q=0.9",
             "X-Requested-With": "XMLHttpRequest",
-            "Referer": "http://147.135.212.148/ints/agent/SMSCDRStats",
+            "Referer": "https://imssms.org/client/SMSCDRStats",
             "Cookie": f"PHPSESSID={self.session_cookie}",
             "Connection": "keep-alive",
             "DNT": "1",
@@ -344,20 +421,18 @@ class OTPMonitorBot:
             "fdate1": f"{current_date} 00:00:00",
             "fdate2": f"{current_date} 23:59:59",
             "frange": "",
-            "fclient": "",
             "fnum": "",
             "fcli": "",
             "fgdate": "",
             "fgmonth": "",
             "fgrange": "",
-            "fgclient": "",
             "fgnumber": "",
             "fgcli": "",
             "fg": "0",
-            "sesskey": "Q05RR0FRUURCUA==",
+            "sesskey": "Q05RR0FRUUZCVQ==",
             "sEcho": "1",
-            "iColumns": "9",
-            "sColumns": ",,,,,,,,",
+            "iColumns": "7",
+            "sColumns": ",,,,,,,",
             "iDisplayStart": "0",
             "iDisplayLength": "25",
             "mDataProp_0": "0",
@@ -395,16 +470,6 @@ class OTPMonitorBot:
             "bRegex_6": "false",
             "bSearchable_6": "true",
             "bSortable_6": "true",
-            "mDataProp_7": "7",
-            "sSearch_7": "",
-            "bRegex_7": "false",
-            "bSearchable_7": "true",
-            "bSortable_7": "true",
-            "mDataProp_8": "8",
-            "sSearch_8": "",
-            "bRegex_8": "false",
-            "bSearchable_8": "true",
-            "bSortable_8": "false",
             "sSearch": "",
             "bRegex": "false",
             "iSortCol_0": "0",
@@ -419,7 +484,6 @@ class OTPMonitorBot:
             return await self._fetch_requests(headers, params)
 
     async def _fetch_aiohttp(self, headers, params):
-        """aiohttp দিয়ে অ্যাসিঙ্ক ফেচ (দ্রুত)"""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -433,15 +497,12 @@ class OTPMonitorBot:
                         text = await response.text()
                         if text and text.strip():
                             return json.loads(text)
-                    else:
-                        logger.warning(f"HTTP {response.status}: {response.reason}")
                     return None
-        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as e:
+        except Exception as e:
             logger.warning(f"⚠️ aiohttp ফেচ এরর: {e}")
             return None
 
     async def _fetch_requests(self, headers, params):
-        """requests দিয়ে সিঙ্ক ফেচ (থ্রেড পুলে চলে, ব্লক করে না)"""
         def _sync_fetch():
             try:
                 response = requests.get(
@@ -453,18 +514,14 @@ class OTPMonitorBot:
                 )
                 if response.status_code == 200 and response.text and response.text.strip():
                     return response.json()
-                else:
-                    logger.warning(f"HTTP {response.status_code}: {response.reason}")
-            except (requests.RequestException, json.JSONDecodeError) as e:
+            except Exception as e:
                 logger.warning(f"⚠️ requests ফেচ এরর: {e}")
             return None
-
         return await asyncio.to_thread(_sync_fetch)
 
     # ---------- মূল মনিটর লুপ ----------
     async def monitor_loop(self):
-        """প্রধান লুপ – প্রতি ০.৫ সেকেন্ডে API চেক করে, প্রথম নতুন OTP পাঠায়"""
-        logger.info("🚀 OTP মনিটরিং শুরু – শুধু প্রথম OTP (ইউনিক আইডি অনুযায়ী)")
+        logger.info("🚀 OTP মনিটরিং শুরু – অটো লগইন সক্রিয়")
         await self.send_startup_message()
 
         consecutive_failures = 0
@@ -472,7 +529,7 @@ class OTPMonitorBot:
 
         while self.is_monitoring:
             try:
-                data = await self.fetch_sms_data()
+                data = await self.fetch_sms_data_with_auth()
 
                 if data and "aaData" in data:
                     consecutive_failures = 0
@@ -481,11 +538,10 @@ class OTPMonitorBot:
                     sms_list = data["aaData"]
                     valid_sms = [
                         sms for sms in sms_list
-                        if len(sms) >= 8 and isinstance(sms[0], str) and ":" in sms[0]
+                        if len(sms) >= 6 and isinstance(sms[0], str) and ":" in sms[0]
                     ]
 
                     if valid_sms:
-                        # API নতুন আগে দেয়, আমরা উল্টে দিচ্ছি যাতে পুরনো আগে পাই
                         valid_sms.reverse()
 
                         for sms in valid_sms:
@@ -511,22 +567,14 @@ class OTPMonitorBot:
                                     self._save_processed_otps()
                                 else:
                                     logger.error(f"❌ OTP পাঠানো ব্যর্থ: {otp_id}")
-
-                                # প্রথম নতুন OTP পাঠানোর পর লুপ থেকে বের হয়ে পরবর্তী চক্রের অপেক্ষা
                                 break
-                        else:
-                            logger.debug("ℹ️ এই ব্যাচে কোনো নতুন OTP নেই")
                     else:
                         logger.debug("ℹ️ কোনো বৈধ SMS পাওয়া যায়নি")
                 else:
                     consecutive_failures += 1
                     retry_delay = min(retry_delay * 1.5, 5.0)
-                    logger.warning(
-                        f"⚠️ API এরর বা খালি রেসপন্স। "
-                        f"{retry_delay:.1f} সেকেন্ড পর আবার চেষ্টা (ফেইল: {consecutive_failures})"
-                    )
+                    logger.warning(f"⚠️ API এরর। {retry_delay:.1f} সেকেন্ড পর আবার চেষ্টা")
 
-                # পরবর্তী চেকের জন্য অপেক্ষা
                 await asyncio.sleep(retry_delay if consecutive_failures > 0 else 0.5)
 
             except asyncio.CancelledError:
@@ -538,26 +586,24 @@ class OTPMonitorBot:
 
 
 async def main():
-    """প্রোগ্রাম এন্ট্রি পয়েন্ট"""
     print("=" * 50)
-    print("🤖 OTP মনিটর বট – শুধু প্রথম OTP")
+    print("🤖 OTP মনিটর বট – অটো লগইন সহ")
     print("=" * 50)
-    print(f"⚡ মোড: প্রথম OTP (ক্রোনোলজিক্যাল)")
-    print(f"⏰ চেক ইন্টারভাল: ডায়নামিক (বেস ০.৫ সেকেন্ড)")
+    print(f"⚡ মোড: প্রথম OTP + অটো রিলগইন")
+    print(f"🔐 লগইন ইউজার: {LOGIN_USERNAME}")
     print(f"📱 গ্রুপ আইডি: {GROUP_CHAT_ID}")
-    print(f"🌐 টার্গেট URL: {TARGET_URL}")
-    print(f"🤖 Number Bot URL: {NUMBER_BOT_URL}")
-    if not HAS_AIOHTTP:
-        print("⚠️  aiohttp ইনস্টল নেই – requests ব্যবহার হবে (ধীর). 'pip install aiohttp' দিন দ্রুত অপারেশনের জন্য")
     print("🚀 বট চালু হচ্ছে...")
     print("=" * 50)
 
     bot = OTPMonitorBot(
         telegram_token=TELEGRAM_BOT_TOKEN,
         group_chat_id=GROUP_CHAT_ID,
-        session_cookie=SESSION_COOKIE,
-        target_url=TARGET_URL,
+        login_username=LOGIN_USERNAME,
+        login_password=LOGIN_PASSWORD,
     )
+    
+    # target_url সেট করুন
+    bot.target_url = TARGET_URL
 
     try:
         await bot.monitor_loop()
