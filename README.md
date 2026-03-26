@@ -1,21 +1,21 @@
 # OTP Monitor Bot
 
-Telegram bot for monitoring and forwarding OTP messages.
+A Telegram bot that monitors and forwards OTP messages in real-time.
 
 ## Features
-- Real-time OTP monitoring
-- Auto cookie refresh
-- First OTP only forwarding
-- 24-hour duplicate prevention
+
+- ✅ Real-time OTP monitoring
+- ✅ First OTP only forwarding (no duplicates)
+- ✅ 24-hour duplicate prevention
+- ✅ Auto cookie refresh
+- ✅ Country flags with emoji
+- ✅ Phone number masking
 
 ## Deployment on Railway
 
-1. Click "Deploy on Railway" button
-2. Add persistent volume at /data
-3. Deploy!
+### Steps
 
-## Environment Variables
-No environment variables needed - all configured in code.
-
-## Commands
-Bot automatically runs and forwards OTPs to configured group.
+1. **Clone this repository**
+```bash
+git clone https://github.com/yourusername/otp-monitor-bot.git
+cd otp-monitor-bot
